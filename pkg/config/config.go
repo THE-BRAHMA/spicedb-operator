@@ -126,17 +126,18 @@ type Config struct {
 // MigrationConfig stores data that is relevant for running migrations
 // or deciding if migrations need to be run
 type MigrationConfig struct {
-	TargetMigration        string
-	TargetPhase            string
-	MigrationLogLevel      string
-	DatastoreEngine        string
-	DatastoreURI           string
-	SpannerCredsSecretRef  string
-	TargetSpiceDBImage     string
-	EnvPrefix              string
-	SpiceDBCmd             string
-	DatastoreTLSSecretName string
-	SpiceDBVersion         *v1alpha1.SpiceDBVersion
+	TargetMigration         string
+	TargetPhase             string
+	MigrationLogLevel       string
+	DatastoreEngine         string
+	DatastoreURI            string
+	DatastoreReadReplicaURI string
+	SpannerCredsSecretRef   string
+	TargetSpiceDBImage      string
+	EnvPrefix               string
+	SpiceDBCmd              string
+	DatastoreTLSSecretName  string
+	SpiceDBVersion          *v1alpha1.SpiceDBVersion
 }
 
 // SpiceConfig contains config relevant to running spicedb or determining
@@ -276,6 +277,21 @@ func NewConfig(cluster *v1alpha1.SpiceDBCluster, globalConfig *OperatorConfig, s
 			errs = append(errs, fmt.Errorf("secret must contain a datastore_uri field"))
 		}
 		migrationConfig.DatastoreURI = string(datastoreURI)
+
+		// Check for read replica URI for supported datastores
+		fmt.Printf("DEBUG: Checking for read replica URI - datastoreEngine=%s\n", datastoreEngine)
+		if datastoreEngine == "postgres" || datastoreEngine == "mysql" {
+			fmt.Printf("DEBUG: Engine is supported, checking secret for datastore_read_replica_conn_uri\n")
+			if datastoreReadReplicaURI, ok := secret.Data["datastore_read_replica_conn_uri"]; ok {
+				fmt.Printf("DEBUG: Found read replica URI in secret: %s\n", string(datastoreReadReplicaURI))
+				migrationConfig.DatastoreReadReplicaURI = string(datastoreReadReplicaURI)
+			} else {
+				fmt.Printf("DEBUG: No datastore_read_replica_conn_uri found in secret\n")
+			}
+		} else {
+			fmt.Printf("DEBUG: Engine %s not supported for read replicas\n", datastoreEngine)
+		}
+
 		psk, ok = secret.Data["preshared_key"]
 		if !ok {
 			errs = append(errs, fmt.Errorf("secret must contain a preshared_key field"))
@@ -377,6 +393,7 @@ func NewConfig(cluster *v1alpha1.SpiceDBCluster, globalConfig *OperatorConfig, s
 		"presharedKey",
 		"preshared_key",
 		"datastore_uri",
+		"datastore_read_replica_conn_uri",
 	}
 	// strip sensitive values from passthrough config (if they have been
 	// inadvertently set by a user)
@@ -454,6 +471,15 @@ func (c *Config) toEnvVarApplyConfiguration() []*applycorev1.EnvVarApplyConfigur
 		envVars = append(envVars,
 			applycorev1.EnvVar().WithName(c.SpiceConfig.EnvPrefix+"_DATASTORE_CONN_URI").WithValueFrom(applycorev1.EnvVarSource().WithSecretKeyRef(
 				applycorev1.SecretKeySelector().WithName(c.SecretName).WithKey("datastore_uri"))))
+		// Add read replica URI for supported datastores
+		fmt.Printf("DEBUG: DatastoreEngine=%s, DatastoreReadReplicaURI=%s, length=%d\n", c.DatastoreEngine, c.DatastoreReadReplicaURI, len(c.DatastoreReadReplicaURI))
+		if (c.DatastoreEngine == "postgres" || c.DatastoreEngine == "mysql") && len(c.DatastoreReadReplicaURI) > 0 {
+			fmt.Printf("DEBUG: Adding read replica environment variable for %s\n", c.DatastoreEngine)
+			envVars = append(envVars,
+				applycorev1.EnvVar().WithName(c.SpiceConfig.EnvPrefix+"_DATASTORE_READ_REPLICA_CONN_URI").WithValue(c.DatastoreReadReplicaURI))
+		} else {
+			fmt.Printf("DEBUG: Skipping read replica env var - engine=%s, has_replica_uri=%t\n", c.DatastoreEngine, len(c.DatastoreReadReplicaURI) > 0)
+		}
 	}
 	if c.DispatchEnabled {
 		envVars = append(envVars,
